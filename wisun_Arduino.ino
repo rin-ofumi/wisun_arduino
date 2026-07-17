@@ -1,7 +1,9 @@
 // =====================================================================
 //  wisun_Arduino.ino
 //
-//  M5StickC/Plus/Plus2 または M5AtomS3 / M5AtomS3R と、
+//  rev0.0.2 2026.7.17 @rin_ofumi
+//
+//  M5StickC/Plus/Plus2/M5StickS3 または M5AtomS3/R と、
 //  Wi-SUN HAT(BP35A1) / Wi-SUN HAT-C1(BP35C1-J11-T01) 
 //  または ATOMIC WiSUN-A1 / ATOMIC WiSUN-C1
 //  を組み合わせて、電力会社のスマートメーターからBルート経由で瞬時電力値・積算電力量を取得し、
@@ -24,6 +26,13 @@
 //     （いずれも ESP32 Arduino core 同梱）
 //
 //  同じフォルダに WisunUdp.h・WisunC1.h・ConfigPortal.h が必要です。
+//
+//  検証時バージョン（参考）
+//  - Arduino IDE: 2.3.10
+//  - M5Stackボードマネージャ: 3.3.8
+//  - M5Unified: 0.2.18
+//  - Ambient ESP32 ESP8266 lib: 1.0.5
+//
 // =====================================================================
 
 #include <M5Unified.h>
@@ -37,27 +46,55 @@
 #include "ConfigPortal.h"
 
 // ------------------------------------------------------------------
-// 対象ボード ＆ 対象Wi-SUNチップ の選択
+// 対象ボード ＆ 対象Wi-SUNモジュール の選択
 //  それぞれ、使用する方の行だけコメントを外し、もう片方はコメント
 //  アウトしてください（ボード・チップ、各1つだけ有効にすること）。
-//  UARTピン・RESETピン・BEEP(ブザー)機能の有無がこの選択に連動します。
+//  UARTピン・RESETピン・BEEP(ブザー)機能の有無・UNIT Buzzerの既定ピン・
+//  画面回転の基準値が、この選択に連動します。
+//
+//  ボードの種類分けについて:
+//   ・M5StickC（無印）は本体にブザー/スピーカーが搭載されていないため、
+//     ブザー機能の扱いはM5AtomS3と同じ「内蔵ブザー無し」になります。
+//   ・M5StickC Plus / Plus2 はスピーカーを搭載していますが、低い周波数
+//     では音が小さく聞き取りにくいため、UNIT Buzzerと同じ周波数で
+//     鳴らすようにしています（BUZZER_TONE_FREQ_HZ参照）。
+//   ・M5StickS3 も同様にスピーカーを搭載していますが、パネルの取付け
+//     向きがM5StickC系と異なるため、画面回転の基準値が異なります。
 // ------------------------------------------------------------------
-// #define TARGET_BOARD_STICKC     // M5StickC / M5StickC Plus / M5StickC Plus2 / M5StickS3
-#define TARGET_BOARD_ATOMS3  // M5AtomS3（ブザー無し）/ M5AtomS3R（ブザー無し）
+// #define TARGET_BOARD_STICKC      // M5StickC（無印、ブザー無し）
+// #define TARGET_BOARD_STICKCPLUS  // M5StickC Plus / Plus2（スピーカー有り）
+// #define TARGET_BOARD_STICKS3     // M5StickS3（スピーカー有り）
+#define TARGET_BOARD_ATOMS3      // M5AtomS3 / AtomS3R（ブザー無し）
 
-// #define TARGET_CHIP_A1           // BP35A1（Wi-SUN HAT 無印 / ATOMIC Wi-SUN-A1）
-#define TARGET_CHIP_C1        // BP35C1-J11-T01（Wi-SUN HAT-C1 / ATOMIC Wi-SUN-C1）
+// #define TARGET_CHIP_A1           // BP35A1
+#define TARGET_CHIP_C1           // BP35C1-J11-T01
+
+// M5StickC / M5StickC Plus / M5StickC Plus2 は、いずれも同じ形状のHAT
+// コネクタを使用しているため、UARTピンの割当ては共通です。
+#if defined(TARGET_BOARD_STICKC) || defined(TARGET_BOARD_STICKCPLUS)
+  #define TARGET_BOARD_IS_STICKC_FAMILY
+#endif
 
 // ---- UART / RESET ピン割当て ----
-#if defined(TARGET_BOARD_STICKC) && defined(TARGET_CHIP_A1)
+#if defined(TARGET_BOARD_IS_STICKC_FAMILY) && defined(TARGET_CHIP_A1)
   #define WISUN_UART_TX_PIN  0
   #define WISUN_UART_RX_PIN  26
   // BP35A1にはRESETピン制御は不要
 
-#elif defined(TARGET_BOARD_STICKC) && defined(TARGET_CHIP_C1)
+#elif defined(TARGET_BOARD_IS_STICKC_FAMILY) && defined(TARGET_CHIP_C1)
   #define WISUN_UART_TX_PIN  0
   #define WISUN_UART_RX_PIN  36
   #define WISUN_RESET_PIN    26
+
+#elif defined(TARGET_BOARD_STICKS3) && defined(TARGET_CHIP_A1)
+  #define WISUN_UART_TX_PIN  8
+  #define WISUN_UART_RX_PIN  0
+  // BP35A1にはRESETピン制御は不要
+
+#elif defined(TARGET_BOARD_STICKS3) && defined(TARGET_CHIP_C1)
+  #define WISUN_UART_TX_PIN  8
+  #define WISUN_UART_RX_PIN  1
+  #define WISUN_RESET_PIN    0
 
 #elif defined(TARGET_BOARD_ATOMS3) && defined(TARGET_CHIP_A1)
   #define WISUN_UART_TX_PIN  6
@@ -74,11 +111,44 @@
 #endif
 
 // ---- ブザー(BEEP)機能の有無（ボード依存） ----
-#if defined(TARGET_BOARD_STICKC)
+// M5StickC（無印）とM5AtomS3/AtomS3Rは内蔵ブザー/スピーカーが無いため0。
+// M5StickC Plus/Plus2とM5StickS3はスピーカーを搭載しているため1。
+#if defined(TARGET_BOARD_STICKC) || defined(TARGET_BOARD_ATOMS3)
+  #define HAS_BUZZER 0
+#elif defined(TARGET_BOARD_STICKCPLUS) || defined(TARGET_BOARD_STICKS3)
   #define HAS_BUZZER 1
-#elif defined(TARGET_BOARD_ATOMS3)
-  #define HAS_BUZZER 0            // M5AtomS3はブザー非搭載のためBEEP機能を無効化
 #endif
+
+// ---- UNIT Buzzer（外付け）の既定接続ピン（ボード依存） ----
+// Groveポート等の配線に合わせて、必要であれば値を変更してください。
+#if defined(TARGET_BOARD_ATOMS3)
+  #define UNIT_BUZZER_PIN 2   // M5AtomS3 / AtomS3R のGroveポート(G2)
+#elif defined(TARGET_BOARD_IS_STICKC_FAMILY)
+  #define UNIT_BUZZER_PIN 32  // M5StickC / Plus / Plus2 のPort A(G32)
+#elif defined(TARGET_BOARD_STICKS3)
+  #define UNIT_BUZZER_PIN 9   // M5StickS3 のPort A(G9)
+#endif
+#define UNIT_BUZZER_CHANNEL 4 // ledcのPWMチャンネル番号(他用途と重複しない番号を使用)
+
+// ---- 画面回転の基準値（ボード依存） ----
+// 加速度センサーによる自動回転(updateAutoRotation())は、0/1/2/3という
+// 「論理的な向き」で判定しますが、実際にM5.Display.setRotation()へ渡す
+// 値はパネルの物理的な取付け向きによってボードごとにズレることがあります。
+// ここで定義するオフセットを足すことで補正します。
+// （M5StickS3は公式サンプルでも setRotation(1) が正位置とされているため、
+//   M5StickC系を基準(0)としたときのズレ分として +1 を設定しています）
+#if defined(TARGET_BOARD_STICKS3)
+  #define BOARD_ROTATION_OFFSET 1
+#else
+  #define BOARD_ROTATION_OFFSET 0
+#endif
+
+// ---- 内蔵ブザー/UNIT Buzzer共通の警告音パラメータ ----
+// M5StickC Plus/Plus2やM5StickS3のスピーカーは、低い周波数だと
+// 音が小さく聞き取りにくいことがあるため、UNIT Buzzerと同じ周波数を
+// 内蔵スピーカーの再生にも使用し、聞こえやすさを揃えています。
+#define BUZZER_TONE_FREQ_HZ     4000  // 警告音の周波数[Hz]
+#define BUZZER_TONE_DURATION_MS 200   // 1回あたりの再生時間[ms]
 
 HardwareSerial WisunSerial(1); // UART1を使用
 
@@ -241,6 +311,12 @@ int screenH() { return M5.Display.height(); }
 static const float ROT_TH_ENTER = 0.55f;  // この値を超えたら回転候補にする
 static const unsigned long ROT_HOLD_MS = 350; // 同じ向きがこの時間続いたら確定
 
+// updateAutoRotation()が判定する「論理的な向き」(0/1/2/3)を、
+// ボードごとのパネル取付け向きに合わせて実際のsetRotation()値へ変換する。
+void applyDisplayRotation(int logicalRotation) {
+  M5.Display.setRotation((logicalRotation + BOARD_ROTATION_OFFSET) % 4);
+}
+
 void updateAutoRotation() {
   if (!imuAvailable || !autoRotateEnabled) return;
 
@@ -263,7 +339,7 @@ void updateAutoRotation() {
   }
   if (candidate != currentRotation && millis() - rotationCandidateSince >= ROT_HOLD_MS) {
     currentRotation = candidate;
-    M5.Display.setRotation(currentRotation);
+    applyDisplayRotation(currentRotation);
     redraw();
   }
 }
@@ -361,10 +437,10 @@ void redraw() {
 //  UNIT Buzzer（M5Stack社製、Groveポート接続の外付けパッシブブザー）
 //  https://docs.m5stack.com/ja/unit/buzzer
 //  SIGNAL 1本にPWM方形波を入力するだけの単純なパッシブブザーのため、
-//  ESP32のLEDC(PWM)機能で直接駆動できる。主にBEEP非搭載のM5AtomS3向け。
+//  ESP32のLEDC(PWM)機能で直接駆動できる。主にBEEP非搭載のボード向け。
+//  接続ピン(UNIT_BUZZER_PIN)・PWMチャンネル(UNIT_BUZZER_CHANNEL)は、
+//  ファイル冒頭の「対象ボード＆対象Wi-SUNチップの選択」で定義済み。
 // ====================================================================
-#define UNIT_BUZZER_PIN     2   // AtomS3のGroveポート(G2)。配線に合わせて変更可
-#define UNIT_BUZZER_CHANNEL 4   // ledcのPWMチャンネル番号(他用途と重複しない番号を使用)
 
 bool unitBuzzerOn = false;
 unsigned long unitBuzzerOffAt = 0;
@@ -1216,7 +1292,7 @@ void handleBeep() {
   bool warn = (u.instant_power >= (long)(cfg.ampereLimit * cfg.ampereRed * 100));
   if (warn && beepEnabled) {
     if (millis() - lastBeep >= 2100) {
-      soundTone(220, 200);
+      soundTone(BUZZER_TONE_FREQ_HZ, BUZZER_TONE_DURATION_MS);
       lastBeep = millis();
     }
   }
@@ -1262,7 +1338,7 @@ void enterSetupPortalIfNeeded() {
   bool configured = portal.load(cfg);
 
   if (!configured || forceSetup) {
-    M5.Display.setRotation(0); // 設定画面は常に標準向きで表示
+    applyDisplayRotation(0); // 設定画面は常に標準向きで表示
     M5.Display.fillScreen(TFT_BLACK);
     M5.Display.setCursor(0, 0);
     M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -1282,7 +1358,7 @@ void enterSetupPortalIfNeeded() {
     M5.Display.fillScreen(TFT_BLACK);
     M5.Display.setCursor(0, 0);
     M5.Display.setTextColor(TFT_GREEN, TFT_BLACK);
-    M5.Display.println("Saved!");
+    M5.Display.println("Done!");
     M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
     M5.Display.println("Rebooting...");
     delay(1500);
@@ -1295,7 +1371,7 @@ void setup() {
   M5.begin(cfgM5);
   Serial.begin(115200);
 
-  M5.Display.setRotation(0);
+  M5.Display.setRotation(BOARD_ROTATION_OFFSET);
   M5.Display.fillScreen(TFT_BLACK);
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
 
@@ -1304,13 +1380,13 @@ void setup() {
   Serial.println(imuAvailable ? ">> IMU detected (auto-rotate enabled)"
                                : ">> IMU not detected (auto-rotate disabled)");
 #if HAS_BUZZER
-  Serial.println(">> Buzzer: internal buzzer available (TARGET_BOARD_STICKC)");
+  Serial.println(">> Buzzer: internal buzzer available");
 #else
-  Serial.println(">> Buzzer: no internal buzzer (TARGET_BOARD_ATOMS3). UNIT Buzzer setting will be checked after config load.");
+  Serial.println(">> Buzzer: no internal buzzer. UNIT Buzzer setting will be checked after config load.");
 #endif
   currentRotation = 0;
   rotationCandidate = 0;
-  M5.Display.setRotation(currentRotation);
+  applyDisplayRotation(currentRotation);
 
   // ---- 設定ポータル（未設定 or 起動時ボタン長押しで起動） ----
   enterSetupPortalIfNeeded();

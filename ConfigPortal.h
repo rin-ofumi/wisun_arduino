@@ -33,7 +33,8 @@ struct WisunHatConfig {
   bool  espnowEnable = true; // ESPNOWブロードキャスト配信の有無
 
   // UNIT Buzzer（M5Stack社製、Groveポート接続の外付けブザー）を使うか。
-  // 主にBEEP非搭載のM5AtomS3向け。StickC系の内蔵ブザーと同じ「警告音」機能を提供する。
+  // 主にBEEP非搭載のボード（M5StickC無印、M5AtomS3等）向け。
+  // 内蔵ブザーを持つ他ボードと同じ「警告音」機能を提供する。
   bool  unitBuzzerEnable = false;
 
   // バックライト輝度（通常時）。0〜255。警告時は自動的に最大輝度になる。
@@ -265,6 +266,16 @@ public:
       saved = true;
     });
 
+    // 端末を譲渡・廃棄する際などに、保存済みの設定を全て消去するためのエンドポイント。
+    // ブラウザ側で確認ダイアログを出した上でPOSTする想定（buildFormHtml内のJS参照）。
+    server.on("/reset", HTTP_POST, [&]() {
+      eraseAll();
+      eraseScan();
+      server.send(200, "text/html; charset=utf-8",
+        "<html><body><h3>全ての設定を初期化しました。再起動します…</h3></body></html>");
+      saved = true;
+    });
+
     server.onNotFound([&]() {
       // captive portal: どんなURLでも設定画面へ誘導
       server.sendHeader("Location", "/", true);
@@ -358,7 +369,7 @@ private:
             String(cfg.espnowEnable ? "checked" : "") + "> ESPNOWで子機へブロードキャスト配信する</label>";
     html += "<label><input type='checkbox' name='unitBuzzerEnable' style='width:auto' " +
             String(cfg.unitBuzzerEnable ? "checked" : "") + "> UNIT Buzzer（Grove接続の外付けブザー）を使う</label>";
-    html += "<small>M5AtomS3など本体にブザーが無い機種向けです。Groveポートに"
+    html += "<small>M5StickC（無印）やM5AtomS3など本体にブザーが無い機種向けです。Groveポート等に"
             "<a href='https://docs.m5stack.com/ja/unit/buzzer' target='_blank'>UNIT Buzzer</a>"
             "を接続すると、StickC系内蔵ブザーと同じ「契約アンペア超過の警告音」機能が使えます。</small>";
     html += "</div>";
@@ -427,6 +438,19 @@ private:
 
     html += "<button type='submit'>保存して再起動</button>";
     html += "</form>";
+
+    // 端末を譲渡・廃棄する際などに、保存済みの設定を全て消去するための操作。
+    // 誤操作防止のため、確認ダイアログを経てから送信する。
+    html += "<div class='card' style='border:2px solid #d9362f'>";
+    html += "<h3 style='color:#d9362f'>全設定の初期化</h3>";
+    html += "<p>WiFi・Bルート認証情報を含む、保存されている設定を全て削除します。"
+            "端末を譲渡・廃棄する際などにご利用ください。<br>"
+            "<strong>この操作は取り消せません。</strong></p>";
+    html += "<form action='/reset' method='POST' "
+            "onsubmit=\"return confirm('保存されている設定を全て削除します。よろしいですか？この操作は取り消せません。');\">";
+    html += "<button type='submit' style='background:#d9362f'>全設定を初期化する</button>";
+    html += "</form>";
+    html += "</div>";
 
     html += "<script>"
             "fetch('/scan').then(r=>r.json()).then(list=>{"
